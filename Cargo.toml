@@ -1,0 +1,15 @@
+[package]
+name = "godot-voip"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+gdnative = "0.10"
+audiopus = "0.3.0-rc.0"
+cpal = "0.13.0"
+laminar = "0.5.0"
+
+[lib]
+crate-type = ["cdylib"]
