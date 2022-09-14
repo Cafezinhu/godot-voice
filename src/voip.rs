@@ -159,42 +159,120 @@ impl GodotVoip {
         let event_receiver = socket.get_event_receiver();
         let _thread = thread::spawn(move || socket.start_polling());
 
-        let input_stream = self
-            .device
-            .build_input_stream(
-                &self.config.config(),
-                move |data: &[f32], _| {
-                    let mut encoded = [0; 1024];
-                    let e_size = encoder_arc.lock().unwrap().encode_float(data, &mut encoded);
-                    match e_size {
-                        Ok(size) => {
-                            let mut last_id = last_sent_packet_id.lock().unwrap();
-                            let mut message = last_id.clone().to_le_bytes().to_vec();
-                            message.extend_from_slice(&encoded[0..size - 1]);
+        let input_stream = match self.config.sample_format() {
+            SampleFormat::F32 => {
+                self
+                .device
+                .build_input_stream(
+                    &self.config.config(),
+                    move |data: &[f32], _| {
+                        let mut encoded = [0; 1024];
+                        let e_size = encoder_arc.lock().unwrap().encode_float(data, &mut encoded);
+                        match e_size {
+                            Ok(size) => {
+                                let mut last_id = last_sent_packet_id.lock().unwrap();
+                                let mut message = last_id.clone().to_le_bytes().to_vec();
+                                message.extend_from_slice(&encoded[0..size - 1]);
 
-                            *last_id = last_id.clone() + 1;
+                                *last_id = last_id.clone() + 1;
 
-                            let unreliable = UDPPacket::unreliable(remote_address_arc.lock().unwrap().as_str().parse().unwrap(), message);
-                            match packet_sender.lock().unwrap().send(unreliable){
-                                Ok(_) => {
-                                },
-                                Err(err) => {
-                                    godot_print!("Error sending packet: {}", err);
+                                let unreliable = UDPPacket::unreliable(remote_address_arc.lock().unwrap().as_str().parse().unwrap(), message);
+                                match packet_sender.lock().unwrap().send(unreliable){
+                                    Ok(_) => {
+                                    },
+                                    Err(err) => {
+                                        godot_print!("Error sending packet: {}", err);
+                                    }
                                 }
+                            },
+                            Err(err) => {
+                                godot_print!("Pre encoding error: {}", err);
                             }
-                        },
-                        Err(err) => {
-                            godot_print!("Pre encoding error: {}", err);
                         }
-                    }
-                },
-                move |_err| {
-                    // react to errors here.
-                    godot_print!("error");
-                },
-            )
-            .unwrap();
+                    },
+                    move |_err| {
+                        // react to errors here.
+                        godot_print!("error");
+                    },
+                )
+                .unwrap()
+            },
+            SampleFormat::I16 => {
+                self
+                .device
+                .build_input_stream(
+                    &self.config.config(),
+                    move |data: &[i16], _| {
+                        let mut encoded = [0; 1024];
+                        let e_size = encoder_arc.lock().unwrap().encode(data, &mut encoded);
+                        match e_size {
+                            Ok(size) => {
+                                let mut last_id = last_sent_packet_id.lock().unwrap();
+                                let mut message = last_id.clone().to_le_bytes().to_vec();
+                                message.extend_from_slice(&encoded[0..size - 1]);
 
+                                *last_id = last_id.clone() + 1;
+
+                                let unreliable = UDPPacket::unreliable(remote_address_arc.lock().unwrap().as_str().parse().unwrap(), message);
+                                match packet_sender.lock().unwrap().send(unreliable){
+                                    Ok(_) => {
+                                    },
+                                    Err(err) => {
+                                        godot_print!("Error sending packet: {}", err);
+                                    }
+                                }
+                            },
+                            Err(err) => {
+                                godot_print!("Pre encoding error: {}", err);
+                            }
+                        }
+                    },
+                    move |_err| {
+                        // react to errors here.
+                        godot_print!("error");
+                    },
+                )
+                .unwrap()
+            },
+            SampleFormat::U16 => {
+                self
+                .device
+                .build_input_stream(
+                    &self.config.config(),
+                    move |data: &[i16], _| {
+                        let mut encoded = [0; 1024];
+                        let e_size = encoder_arc.lock().unwrap().encode(data, &mut encoded);
+                        match e_size {
+                            Ok(size) => {
+                                let mut last_id = last_sent_packet_id.lock().unwrap();
+                                let mut message = last_id.clone().to_le_bytes().to_vec();
+                                message.extend_from_slice(&encoded[0..size - 1]);
+
+                                *last_id = last_id.clone() + 1;
+
+                                let unreliable = UDPPacket::unreliable(remote_address_arc.lock().unwrap().as_str().parse().unwrap(), message);
+                                match packet_sender.lock().unwrap().send(unreliable){
+                                    Ok(_) => {
+                                    },
+                                    Err(err) => {
+                                        godot_print!("Error sending packet: {}", err);
+                                    }
+                                }
+                            },
+                            Err(err) => {
+                                godot_print!("Pre encoding error: {}", err);
+                            }
+                        }
+                    },
+                    move |_err| {
+                        // react to errors here.
+                        godot_print!("error");
+                    },
+                )
+                .unwrap()
+            }
+        };
+        
         input_stream.play().unwrap();
         self.input_stream = Some(input_stream);
 
