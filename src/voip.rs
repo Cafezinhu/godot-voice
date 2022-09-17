@@ -23,7 +23,8 @@ pub struct GodotVoip {
     config: SupportedStreamConfig,
     input_stream: Option<Stream>,
     output_stream: Option<Stream>,
-    current_mic_data: Arc<Mutex<Vec<f32>>>,
+    current_mic_data_f32: Arc<Mutex<Vec<f32>>>,
+    current_mic_data_i16: Arc<Mutex<Vec<i16>>>,
     remote_address: Arc<Mutex<String>>,
 }
 
@@ -55,7 +56,8 @@ impl GodotVoip {
             config,
             input_stream: None,
             output_stream: None,
-            current_mic_data: Arc::new(Mutex::new(Vec::new())),
+            current_mic_data_f32: Arc::new(Mutex::new(Vec::new())),
+            current_mic_data_i16: Arc::new(Mutex::new(Vec::new())),
             remote_address: Arc::new(Mutex::new(String::from("127.0.0.1:4242"))),
         };
 
@@ -142,19 +144,22 @@ impl GodotVoip {
         }
         godot_print!("creating stuff");
 
-        let encoder = Encoder::new(
+        let mut encoder = Encoder::new(
             SampleRate::Hz48000,
-            audiopus::Channels::Mono,
+            audiopus::Channels::Stereo,
             audiopus::Application::Voip,
         )
         .unwrap();
+        encoder.set_force_channels(audiopus::Channels::Stereo).unwrap();
+        // encoder.set_max_bandwidth(audiopus::Bandwidth::Narrowband).unwrap();
+        // encoder.set_force_channels(Channels::Mono);
         let encoder_arc = Arc::new(Mutex::new(encoder));
 
         let remote_address_arc = Arc::clone(&self.remote_address);
 
         let last_sent_packet_id: Arc<Mutex<u32>> = Arc::new(Mutex::new(0));
 
-        let mut socket = Socket::bind("0.0.0.0:8383").unwrap();
+        let mut socket = Socket::bind("0.0.0.0:0").unwrap();
         let packet_sender = Arc::new(Mutex::new(socket.get_packet_sender()));
         let event_receiver = socket.get_event_receiver();
         let _thread = thread::spawn(move || socket.start_polling());
@@ -172,7 +177,7 @@ impl GodotVoip {
                             Ok(size) => {
                                 let mut last_id = last_sent_packet_id.lock().unwrap();
                                 let mut message = last_id.clone().to_le_bytes().to_vec();
-                                message.extend_from_slice(&encoded[0..size - 1]);
+                                message.extend_from_slice(&encoded[0..size]);
 
                                 *last_id = last_id.clone() + 1;
 
@@ -203,19 +208,24 @@ impl GodotVoip {
                 .build_input_stream(
                     &self.config.config(),
                     move |data: &[i16], _| {
-                        let mut encoded = [0; 1024];
+                        godot_print!("Getting data!: {}", data.len());
+                        let mut encoded = [0; 10240];
+                        
                         let e_size = encoder_arc.lock().unwrap().encode(data, &mut encoded);
                         match e_size {
                             Ok(size) => {
                                 let mut last_id = last_sent_packet_id.lock().unwrap();
                                 let mut message = last_id.clone().to_le_bytes().to_vec();
-                                message.extend_from_slice(&encoded[0..size - 1]);
+                                message.extend_from_slice(&encoded[0..size]);
+
+                                godot_print!("Sending size: {}", message.len());
 
                                 *last_id = last_id.clone() + 1;
 
                                 let unreliable = UDPPacket::unreliable(remote_address_arc.lock().unwrap().as_str().parse().unwrap(), message);
                                 match packet_sender.lock().unwrap().send(unreliable){
                                     Ok(_) => {
+                                        godot_print!("Data sent!");
                                     },
                                     Err(err) => {
                                         godot_print!("Error sending packet: {}", err);
@@ -246,7 +256,7 @@ impl GodotVoip {
                             Ok(size) => {
                                 let mut last_id = last_sent_packet_id.lock().unwrap();
                                 let mut message = last_id.clone().to_le_bytes().to_vec();
-                                message.extend_from_slice(&encoded[0..size - 1]);
+                                message.extend_from_slice(&encoded[0..size]);
 
                                 *last_id = last_id.clone() + 1;
 
@@ -276,9 +286,22 @@ impl GodotVoip {
         input_stream.play().unwrap();
         self.input_stream = Some(input_stream);
 
-        let output_mic_data_arc = Arc::clone(&self.current_mic_data);
+        let mic_data_f32 = Arc::clone(&self.current_mic_data_f32);
+        let mic_data_i16 = Arc::clone(&self.current_mic_data_i16);
+        let output_device = self.host.default_output_device().unwrap();
+        godot_print!("Selected output device: {}", output_device.name().unwrap());
+        let mut output_supported_config = output_device.supported_output_configs().unwrap();
+        let output_config = output_supported_config
+            .next()
+            .unwrap()
+            .with_max_sample_rate();
+        
+        let output_sample_format = output_config.sample_format();
 
-        let decoder = Arc::new(Mutex::new(Decoder::new(SampleRate::Hz48000, Channels::Mono).unwrap()));
+        let output_mic_data_arc_f32 = Arc::clone(&self.current_mic_data_f32);
+        let output_mic_data_arc_i16 = Arc::clone(&self.current_mic_data_i16);
+
+        let decoder = Arc::new(Mutex::new(Decoder::new(SampleRate::Hz48000, Channels::Stereo).unwrap()));
 
         thread::spawn(move || {
             loop {
@@ -286,6 +309,7 @@ impl GodotVoip {
                     Ok(event) => {
                         match event {
                             SocketEvent::Packet(packet) => {
+                                godot_print!("received packet");
                                 let msg = packet.payload();
                                 let recv_buf = msg.to_vec();
 
@@ -298,25 +322,52 @@ impl GodotVoip {
                                 let packed_encoded =
                                     Packet::try_from(&encoded_buffer).unwrap();
 
-                                let mut decoded_vec: Vec<f32> = vec![0.0; 4098];
-                                let mut_decoded =
-                                    MutSignals::try_from(&mut decoded_vec).unwrap();
-                                let decoded_size =
-                                    decoder.lock().unwrap().decode_float(
-                                        Some(packed_encoded),
-                                        mut_decoded,
-                                        false,
-                                    );
-                                match decoded_size {
-                                    Ok(size) => {
-                                        let mut mic_data =
-                                            output_mic_data_arc.lock().unwrap();
-                                        *mic_data =
-                                            decoded_vec[0..size - 1].to_vec();
-                                    }
-                                    Err(e) => {
-                                        godot_print!("error: {}", e);
-                                    }
+                                match output_sample_format {
+                                    SampleFormat::F32 => {
+                                        let mut decoded_vec: Vec<f32> = vec![0.0; 8192];
+                                        let mut_decoded =
+                                            MutSignals::try_from(&mut decoded_vec).unwrap();
+                                        let decoded_size =
+                                            decoder.lock().unwrap().decode_float(
+                                                Some(packed_encoded),
+                                                mut_decoded,
+                                                false,
+                                            );
+                                        match decoded_size {
+                                            Ok(size) => {
+                                                let mut mic_data =
+                                                    output_mic_data_arc_f32.lock().unwrap();
+                                                *mic_data =
+                                                    decoded_vec[0..size].to_vec();
+                                            }
+                                            Err(e) => {
+                                                godot_print!("error: {}", e);
+                                            }
+                                        }
+                                    },
+                                    SampleFormat::I16 => {
+                                        let mut decoded_vec: Vec<i16> = vec![0; 10240];
+                                        let mut_decoded =
+                                            MutSignals::try_from(&mut decoded_vec).unwrap();
+                                        let decoded_size =
+                                            decoder.lock().unwrap().decode(
+                                                Some(packed_encoded),
+                                                mut_decoded,
+                                                false,
+                                            );
+                                        match decoded_size {
+                                            Ok(size) => {
+                                                let mut mic_data =
+                                                    output_mic_data_arc_i16.lock().unwrap();
+                                                *mic_data =
+                                                    decoded_vec[0..size].to_vec();
+                                            }
+                                            Err(e) => {
+                                                godot_print!("decoding error: {}", e);
+                                            }
+                                        }
+                                    },
+                                    SampleFormat::U16 => {}
                                 }
                             },
                             SocketEvent::Connect(_) => {
@@ -331,41 +382,87 @@ impl GodotVoip {
                         }
                         
                     },
-                    Err(_) => {
-
+                    Err(err) => {
+                        godot_print!("Recv error: {}", err);
                     }
                 }
             }
         });
 
-        let mic_data = Arc::clone(&self.current_mic_data);
-        let output_device = self.host.default_output_device().unwrap();
-        godot_print!("Selected output device: {}", output_device.name().unwrap());
-        let mut output_supported_config = output_device.supported_output_configs().unwrap();
-        let output_config = output_supported_config
-            .next()
-            .unwrap()
-            .with_max_sample_rate();
+        
 
-        let output_stream = output_device
-            .build_output_stream(
-                &output_config.config(),
-                move |data: &mut [f32], _| {
-                    let mut i = 0;
-                    let mut mic_data = mic_data.lock().unwrap();
-                    for sample in data.iter_mut() {
-                        if i < mic_data.len() {
-                            *sample = mic_data[i];
-                            i += 1;
-                        }
-                    }
-                    *mic_data = Vec::new();
-                },
-                move |err| {
-                    godot_print!("output error: {}", err);
-                },
-            )
-            .unwrap();
+
+        let output_stream = 
+        match output_config.sample_format() {
+            SampleFormat::F32 => {
+                output_device
+                    .build_output_stream(
+                        &output_config.config(),
+                        move |data: &mut [f32], _| {
+                            godot_print!("playing output f32");
+                            let mut i = 0;
+                            let mut mic_data = mic_data_f32.lock().unwrap();
+                            for sample in data.iter_mut() {
+                                if i < mic_data.len() {
+                                    *sample = mic_data[i];
+                                    i += 1;
+                                }
+                            }
+                            *mic_data = Vec::new();
+                        },
+                        move |err| {
+                            godot_print!("output error: {}", err);
+                        },
+                    )
+                    .unwrap()
+            },
+            SampleFormat::I16 => {
+                output_device
+                    .build_output_stream(
+                        &output_config.config(),
+                        move |data: &mut [i16], _| {
+                            // godot_print!("playing output i16");
+                            let mut i = 0;
+                            let mut mic_data = mic_data_i16.lock().unwrap();
+                            // godot_print!("mic data size: {}", mic_data.len());
+                            for sample in data.iter_mut() {
+                                if i < mic_data.len() {
+                                    *sample = mic_data[i];
+                                    i += 1;
+                                }
+                            }
+                            *mic_data = Vec::new();
+                        },
+                        move |err| {
+                            godot_print!("output error: {}", err);
+                        },
+                    )
+                    .unwrap()
+            },
+            SampleFormat::U16 => {
+                output_device
+                    .build_output_stream(
+                        &output_config.config(),
+                        move |data: &mut [i16], _| {
+                            godot_print!("playing output u16");
+                            let mut i = 0;
+                            let mut mic_data = mic_data_i16.lock().unwrap();
+                            for sample in data.iter_mut() {
+                                if i < mic_data.len() {
+                                    *sample = mic_data[i];
+                                    i += 1;
+                                }
+                            }
+                            *mic_data = Vec::new();
+                        },
+                        move |err| {
+                            godot_print!("output error: {}", err);
+                        },
+                    )
+                    .unwrap()
+            }
+        };
+        
         output_stream.play().unwrap();
 
         self.output_stream = Some(output_stream);
