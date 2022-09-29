@@ -166,13 +166,15 @@ impl GodotVoip {
                 .build_input_stream(
                     &self.config.config(),
                     move |data: &[f32], _| {
-                        let mut encoded = [0; 1024];
+                        let mut encoded = [0; 10240];
                         let e_size = encoder_arc.lock().unwrap().encode_float(data, &mut encoded);
                         match e_size {
                             Ok(size) => {
                                 let mut last_id = last_sent_packet_id.lock().unwrap();
                                 let mut message = last_id.clone().to_le_bytes().to_vec();
                                 message.extend_from_slice(&encoded[0..size - 1]);
+
+                                godot_print!("size: {}", message.len());
 
                                 *last_id = last_id.clone() + 1;
 
@@ -203,7 +205,7 @@ impl GodotVoip {
                 .build_input_stream(
                     &self.config.config(),
                     move |data: &[i16], _| {
-                        let mut encoded = [0; 1024];
+                        let mut encoded = [0; 10240];
                         let e_size = encoder_arc.lock().unwrap().encode(data, &mut encoded);
                         match e_size {
                             Ok(size) => {
@@ -240,7 +242,7 @@ impl GodotVoip {
                 .build_input_stream(
                     &self.config.config(),
                     move |data: &[i16], _| {
-                        let mut encoded = [0; 1024];
+                        let mut encoded = [0; 10240];
                         let e_size = encoder_arc.lock().unwrap().encode(data, &mut encoded);
                         match e_size {
                             Ok(size) => {
