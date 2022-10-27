@@ -1,7 +1,7 @@
 use audiopus::coder::{Decoder, Encoder};
 use audiopus::packet::Packet;
 use audiopus::{Channels, MutSignals, SampleRate};
-use gdnative::api::{AudioServer, AudioEffect, AudioEffectCapture};
+use gdnative::api::{AudioServer, AudioEffect, AudioEffectCapture, AudioStreamGenerator, AudioStreamPlayer, AudioStreamGeneratorPlayback};
 use gdnative::prelude::*;
 use laminar::{Socket, Packet as UDPPacket, SocketEvent};
 
@@ -13,6 +13,7 @@ use std::{thread, time};
 #[inherit(Node)]
 #[register_with(Self::register_signals)]
 pub struct GodotVoip {
+    input_stream: Option<cpal::Stream>,
     current_mic_data_f32: Arc<Mutex<Vec<f32>>>,
     current_mic_data_i16: Arc<Mutex<Vec<i16>>>,
     remote_address: Arc<Mutex<String>>,
@@ -29,6 +30,7 @@ impl GodotVoip {
 
     fn new(_owner: &Node) -> Self {
         let instance = GodotVoip {
+            input_stream: None,
             current_mic_data_f32: Arc::new(Mutex::new(Vec::new())),
             current_mic_data_i16: Arc::new(Mutex::new(Vec::new())),
             remote_address: Arc::new(Mutex::new(String::from("127.0.0.1:4242"))),
@@ -104,7 +106,9 @@ impl GodotVoip {
 
     #[method]
     #[cfg(target_arch = "x86_64")]
-    fn build_input_stream(&mut self, id: i32, output_id: i32) {
+    fn build_input_stream(&mut self, player: Ref<AudioStreamPlayer>, id: i32, output_id: i32) {
+        let playback = unsafe {player.assume_safe().get_stream_playback().unwrap().try_cast::<AudioStreamGeneratorPlayback>().unwrap()};
+        unsafe {player.assume_safe().play(0.0)};
         use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
         use cpal::SampleFormat;
 
@@ -129,14 +133,13 @@ impl GodotVoip {
 
         let mut encoder = Encoder::new(
             SampleRate::Hz48000,
-            audiopus::Channels::Stereo,
+            audiopus::Channels::Mono,
             audiopus::Application::Voip,
         )
         .unwrap();
-        encoder.set_force_channels(audiopus::Channels::Stereo).unwrap();
         // encoder.set_max_bandwidth(audiopus::Bandwidth::Narrowband).unwrap();
         // encoder.set_force_channels(Channels::Mono);
-        let encoder_arc = Arc::new(Mutex::new(encoder));
+        // let encoder_arc = Arc::new(Mutex::new(encoder));
 
         let remote_address_arc = Arc::clone(&self.remote_address);
 
@@ -147,6 +150,9 @@ impl GodotVoip {
         let event_receiver = socket.get_event_receiver();
         let _thread = thread::spawn(move || socket.start_polling());
 
+        //TODO: remover este decoder
+        let mut new_decoder = Decoder::new(SampleRate::Hz48000, audiopus::Channels::Mono).unwrap();
+
         let input_stream = match config.sample_format() {
             SampleFormat::F32 => {
                 device
@@ -154,23 +160,44 @@ impl GodotVoip {
                     &config.config(),
                     move |data: &[f32], _| {
                         let mut encoded = [0; 1024];
-                        let e_size = encoder_arc.lock().unwrap().encode_float(data, &mut encoded);
+                        let e_size = encoder.encode_float(data, &mut encoded);
                         match e_size {
                             Ok(size) => {
-                                let mut last_id = last_sent_packet_id.lock().unwrap();
-                                let mut message = last_id.clone().to_le_bytes().to_vec();
-                                message.extend_from_slice(&encoded[0..size]);
+                                let mut message = &encoded[..size];
+                                // let mut buffer: Vec<i16> = vec![0; 4096];
+                                let mut buffer: Vec<f32> = vec![0.0; 4096];
+                                let mut mut_signal_buffer = MutSignals::try_from(&mut buffer).unwrap();
+                                match new_decoder.decode_float(Some(Packet::try_from(message).unwrap()), mut_signal_buffer, false){
+                                    Ok(size) => {
+                                        let buf = &buffer[..size];
+                                        let mut vector_buffer = Vec::new();
+                                        for b in buf {
+                                            vector_buffer.push(Vector2::new(b.clone() as f32, b.clone() as f32));
+                                        }
+                                        unsafe{playback.assume_safe().push_buffer(PoolArray::from_vec(vector_buffer))};
+                                        // godot_print!("size: {}", size);
 
-                                *last_id = last_id.clone() + 1;
-
-                                let unreliable = UDPPacket::unreliable(remote_address_arc.lock().unwrap().as_str().parse().unwrap(), message);
-                                match packet_sender.lock().unwrap().send(unreliable){
-                                    Ok(_) => {
                                     },
                                     Err(err) => {
-                                        godot_print!("Error sending packet: {}", err);
+                                        godot_print!("{}", err);
                                     }
                                 }
+
+                                // let mut last_id = last_sent_packet_id.lock().unwrap();
+                                // let mut message = last_id.clone().to_le_bytes().to_vec();
+                                // message.extend_from_slice(&encoded[0..size]);
+
+                                // *last_id = last_id.clone() + 1;
+
+                                
+                                // let unreliable = UDPPacket::unreliable(remote_address_arc.lock().unwrap().as_str().parse().unwrap(), message);
+                                // match packet_sender.lock().unwrap().send(unreliable){
+                                //     Ok(_) => {
+                                //     },
+                                //     Err(err) => {
+                                //         godot_print!("Error sending packet: {}", err);
+                                //     }
+                                // }
                             },
                             Err(err) => {
                                 godot_print!("Pre encoding error: {}", err);
@@ -192,7 +219,7 @@ impl GodotVoip {
                         godot_print!("Getting data!: {}", data.len());
                         let mut encoded = [0; 10240];
                         
-                        let e_size = encoder_arc.lock().unwrap().encode(data, &mut encoded);
+                        let e_size = encoder.encode(data, &mut encoded);
                         match e_size {
                             Ok(size) => {
                                 let mut last_id = last_sent_packet_id.lock().unwrap();
@@ -231,7 +258,7 @@ impl GodotVoip {
                     &config.config(),
                     move |data: &[i16], _| {
                         let mut encoded = [0; 1024];
-                        let e_size = encoder_arc.lock().unwrap().encode(data, &mut encoded);
+                        let e_size = encoder.encode(data, &mut encoded);
                         match e_size {
                             Ok(size) => {
                                 let mut last_id = last_sent_packet_id.lock().unwrap();
@@ -264,6 +291,7 @@ impl GodotVoip {
         };
         
         input_stream.play().unwrap();
+        self.input_stream = Some(input_stream);
 
         let mic_data_f32 = Arc::clone(&self.current_mic_data_f32);
         let mic_data_i16 = Arc::clone(&self.current_mic_data_i16);
@@ -449,7 +477,7 @@ impl GodotVoip {
 
     #[method]
     #[cfg(target_arch = "aarch64")]
-    fn build_input_stream(&mut self, input_id: i32, output_id: i32){
+    fn build_input_stream(&mut self, player: Ref<AudioStreamPlayer>, input_id: i32, output_id: i32){
         // let audio_server = AudioServer::godot_singleton();
         // let bus_index = audio_server.get_bus_index("Record");
         // let effect = audio_server.get_bus_effect( bus_index, 0).unwrap().cast::<AudioEffectCapture>().unwrap();
