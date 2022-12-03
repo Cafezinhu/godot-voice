@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use audiopus::MutSignals;
 use audiopus::coder::{Encoder, Decoder};
 use audiopus::packet::Packet;
+
 use gdnative::api::networked_multiplayer_peer::ConnectionStatus;
 use gdnative::api::{AudioServer, AudioEffectCapture, AudioStreamGeneratorPlayback};
 use gdnative::prelude::*;
@@ -15,7 +16,8 @@ pub struct GodotVoip{
     microphone_effect: Option<Ref<AudioEffectCapture>>,
     audio_stream_playbacks: HashMap<i64, Ref<AudioStreamGeneratorPlayback>>,
     encoder: Encoder,
-    decoder: Decoder
+    decoder: Decoder,
+    muted: bool
 }
 
 #[methods]
@@ -25,12 +27,16 @@ impl GodotVoip {
             microphone_effect: None,
             audio_stream_playbacks: HashMap::new(),
             encoder: Encoder::new(audiopus::SampleRate::Hz48000, audiopus::Channels::Mono, audiopus::Application::Voip).unwrap(),
-            decoder: Decoder::new(audiopus::SampleRate::Hz48000, audiopus::Channels::Mono).unwrap()
+            decoder: Decoder::new(audiopus::SampleRate::Hz48000, audiopus::Channels::Mono).unwrap(),
+            muted: false
         }
     }
 
     #[method]
     fn _process(&self, #[base] base: &Node, _delta: f64){
+        if self.muted {
+            return;
+        }
         let tree = unsafe {base.get_tree().unwrap().assume_safe()};
         let peer_id;
         match tree.network_peer(){
@@ -70,6 +76,16 @@ impl GodotVoip {
             },
             None => {}
         }
+    }
+
+    #[method]
+    fn set_muted(&mut self, muted: bool){
+        self.muted = muted;
+    }
+
+    #[method]
+    fn get_muted(&self) -> bool {
+        self.muted
     }
 
     #[method]
