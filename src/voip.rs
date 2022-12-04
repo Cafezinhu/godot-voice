@@ -66,7 +66,6 @@ impl GodotVoip {
                             let encoded_buffer = encoded_buffer[..size].to_vec();
                             let pool_variant = PoolArray::from_vec(encoded_buffer).to_variant();
                             base.rpc_unreliable(GodotString::from_str("receive_voice"), &[peer_id.to_variant(), pool_variant]);
-                            godot_print!("encoded size: {}", size);
                         },
                         Err(err) => {
                             godot_print!("Encoding error: {}", err);
@@ -105,6 +104,18 @@ impl GodotVoip {
     #[method]
     fn set_peer_audio_stream_playback(&mut self, peer_id: i64, audio_stream_playback: Ref<AudioStreamGeneratorPlayback>){
         self.audio_stream_playbacks.insert(peer_id, audio_stream_playback);
+    }
+
+    #[method]
+    fn remove_peer_audio_stream_playback(&mut self, peer_id: i64) -> bool{
+        match self.audio_stream_playbacks.remove(&peer_id) {
+            Some(_) => {
+                return true;
+            },
+            None => {
+                return false;
+            }
+        }
     }
 
     #[method(rpc = "remote")]
