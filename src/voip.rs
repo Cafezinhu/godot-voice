@@ -33,8 +33,8 @@ impl GodotVoip {
             microphone_effect: None,
             audio_stream_playbacks: HashMap::new(),
             voice_collections: HashMap::new(),
-            encoder: Encoder::new(audiopus::SampleRate::Hz48000, audiopus::Channels::Mono, audiopus::Application::Voip).unwrap(),
-            decoder: Decoder::new(audiopus::SampleRate::Hz48000, audiopus::Channels::Mono).unwrap(),
+            encoder: Encoder::new(audiopus::SampleRate::Hz16000, audiopus::Channels::Mono, audiopus::Application::Voip).unwrap(),
+            decoder: Decoder::new(audiopus::SampleRate::Hz16000, audiopus::Channels::Mono).unwrap(),
             muted: false,
             last_voice_id: 0
         }
@@ -63,8 +63,8 @@ impl GodotVoip {
         match &self.microphone_effect {
             Some(microphone_effect) => {
                 let safe_effect = unsafe{ microphone_effect.assume_safe() };
-                if safe_effect.get_frames_available() >= 960 {
-                    let stereo_buffer = safe_effect.get_buffer(960);
+                if safe_effect.get_frames_available() >= 160 {
+                    let stereo_buffer = safe_effect.get_buffer(160);
                     let mono_buffer: Vec<f32> = stereo_buffer.to_vec().iter().map(|value| value.x).collect();
 
                     let buffer = mono_buffer.as_slice();
