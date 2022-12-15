@@ -68,7 +68,7 @@ impl GodotVoip {
                     let mono_buffer: Vec<f32> = stereo_buffer.to_vec().iter().map(|value| value.x).collect();
 
                     let buffer = mono_buffer.as_slice();
-                    let mut encoded_buffer = [0u8; 2048];
+                    let mut encoded_buffer = [0u8; 128];
                     match self.encoder.encode_float(buffer, &mut encoded_buffer){
                         Ok(size) => {
                             let encoded_buffer = encoded_buffer[..size].to_vec();
@@ -170,7 +170,7 @@ impl GodotVoip {
         let encoded_vec = encoded_buffer.to_vec();
         let packet_encoded = Packet::try_from(&encoded_vec).unwrap();
 
-        let mut decoded_buffer: Vec<f32> = vec![0.0; 4096];
+        let mut decoded_buffer: Vec<f32> = vec![0.0; 256];
         let signal_buffer = MutSignals::try_from(&mut decoded_buffer).unwrap();
 
         match self.decoder.decode_float(Some(packet_encoded), signal_buffer, false){
