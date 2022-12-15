@@ -8,10 +8,6 @@ use gdnative::api::networked_multiplayer_peer::ConnectionStatus;
 use gdnative::api::{AudioServer, AudioEffectCapture, AudioStreamGeneratorPlayback};
 use gdnative::prelude::*;
 
-use self::sort::quick_sort;
-
-mod sort;
-
 #[derive(NativeClass)]
 #[inherit(Node)]
 pub struct GodotVoip{
@@ -138,7 +134,8 @@ impl GodotVoip {
                     Some(voice_collection) => {
                         let safe_playback = unsafe {audio_stream_playback.assume_safe()};
 
-                        let sorted_voice_packets = quick_sort(voice_collection.to_vec());
+                        let mut sorted_voice_packets = voice_collection.to_vec();
+                        sorted_voice_packets.sort_unstable_by_key(|voice| voice.id);
 
                         let mut buffer = PoolArray::new();
                         for voice_packet in sorted_voice_packets {
