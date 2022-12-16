@@ -13,10 +13,18 @@ use gdnative::prelude::*;
 pub struct GodotVoip{
     microphone_effect: Option<Ref<AudioEffectCapture>>,
     audio_stream_playbacks: HashMap<i64, Ref<AudioStreamGeneratorPlayback>>,
+    voice_packets: HashMap<i64, Vec<VoicePacket>>,
+    sorted_voice_packets: HashMap<i64, Vec<VoicePacket>>,
     encoder: Encoder,
     decoder: Decoder,
     muted: bool,
     last_voice_id: u32
+}
+
+#[derive(Clone)]
+struct VoicePacket{
+    id: u32,
+    voice_pool: PoolArray<Vector2>
 }
 
 #[methods]
@@ -25,6 +33,8 @@ impl GodotVoip {
         GodotVoip {
             microphone_effect: None,
             audio_stream_playbacks: HashMap::new(),
+            voice_packets: HashMap::new(),
+            sorted_voice_packets: HashMap::new(),
             encoder: Encoder::new(audiopus::SampleRate::Hz16000, audiopus::Channels::Mono, audiopus::Application::Voip).unwrap(),
             decoder: Decoder::new(audiopus::SampleRate::Hz16000, audiopus::Channels::Mono).unwrap(),
             muted: false,
@@ -33,7 +43,28 @@ impl GodotVoip {
     }
 
     #[method]
+    fn _ready(&self, #[base] base: TRef<Node>){
+        unsafe{base.get_tree().unwrap().assume_safe().create_timer(0.6, false).unwrap().assume_safe().connect("timeout", base, "loop_sort_voice_packets", VariantArray::new_shared(), 0).unwrap()};
+    }
+
+    #[method]
     fn _process(&mut self, #[base] base: &Node, _delta: f64){
+        for (k, mut v) in self.sorted_voice_packets.clone(){
+            match self.audio_stream_playbacks.get(&k) {
+                Some(playback) => {
+                    if v.len() >= 1 {
+                        let safe_playback = unsafe {playback.assume_safe()};
+                        if safe_playback.can_push_buffer(960){
+                            safe_playback.push_buffer(v[0].voice_pool.clone());
+                            v.remove(0);
+                            self.sorted_voice_packets.insert(k, v);
+                        }
+                    }
+                },
+                None => {}
+            }
+        }
+        
         if self.muted {
             return;
         }
@@ -66,7 +97,7 @@ impl GodotVoip {
                             let encoded_buffer = encoded_buffer[..size].to_vec();
                             let pool_variant = PoolArray::from_vec(encoded_buffer).to_variant();
                             let id = self.last_voice_id;
-                            base.rpc_unreliable(GodotString::from_str("receive_voice"), &[peer_id.to_variant(), id.to_variant(), pool_variant]);
+                            base.rpc_unreliable("receive_voice", &[peer_id.to_variant(), id.to_variant(), pool_variant]);
                             self.last_voice_id += 1;
                         },
                         Err(err) => {
@@ -106,12 +137,32 @@ impl GodotVoip {
     #[method]
     fn set_peer_audio_stream_playback(&mut self, peer_id: i64, audio_stream_playback: Ref<AudioStreamGeneratorPlayback>){
         self.audio_stream_playbacks.insert(peer_id, audio_stream_playback);
-        let array = VariantArray::new();
-        array.push(peer_id);
+        self.voice_packets.insert(peer_id, Vec::new());
+        self.sorted_voice_packets.insert(peer_id, Vec::new());
+    }
+
+    #[method]
+    fn loop_sort_voice_packets(&mut self, #[base] base: TRef<Node>){
+        for (k, v) in self.voice_packets.clone() {
+            let mut sorted_voice_packets = v;
+            sorted_voice_packets.sort_unstable_by_key(|value| value.id);
+            self.sorted_voice_packets.insert(k, sorted_voice_packets);
+            self.voice_packets.insert(k, Vec::new());
+        }
+
+        unsafe{base.get_tree().unwrap().assume_safe().create_timer(0.6, false).unwrap().assume_safe().connect("timeout", base, "loop_sort_voice_packets", VariantArray::new_shared(), 0).unwrap()};
     }
 
     #[method]
     fn remove_peer_audio_stream_playback(&mut self, peer_id: i64) -> bool{
+        match self.voice_packets.remove(&peer_id){
+            Some(_) => {},
+            None => {}
+        }
+        match self.sorted_voice_packets.remove(&peer_id){
+            Some(_) => {},
+            None => {}
+        }
         match self.audio_stream_playbacks.remove(&peer_id) {
             Some(_) => {
                 return true;
@@ -123,7 +174,7 @@ impl GodotVoip {
     }
 
     #[method(rpc = "remote")]
-    fn receive_voice(&mut self, peer_id: i64, encoded_buffer: PoolArray<u8>){
+    fn receive_voice(&mut self, peer_id: i64, voice_packet_id: u32, encoded_buffer: PoolArray<u8>){
         let encoded_vec = encoded_buffer.to_vec();
         let packet_encoded = Packet::try_from(&encoded_vec).unwrap();
 
@@ -136,12 +187,15 @@ impl GodotVoip {
                 let vector2_buffer: Vec<Vector2> = buffer.into_iter().map(|value| Vector2{x: value.clone(), y: value.clone()}).collect();
                 let pool = PoolArray::from_vec(vector2_buffer);
 
-                match self.audio_stream_playbacks.get(&peer_id) {
-                    Some(audio_stream_playback) => {
-                        let safe_playback = unsafe {audio_stream_playback.assume_safe()};
-                        safe_playback.push_buffer(pool);
+                match self.voice_packets.get(&peer_id){
+                    Some(voice_packets) => {
+                        let mut new_voice_packets = voice_packets.to_vec();
+                        new_voice_packets.push(VoicePacket { id: voice_packet_id, voice_pool: pool });
+                        self.voice_packets.insert(peer_id, new_voice_packets);
                     },
-                    None => {}
+                    None => {
+                        godot_warn!("Voice packet from {} received. AudioStreamGeneratorPlayback not set with set_peer_audio_stream_playback.", peer_id);
+                    }
                 }
             },
             Err(err) => {
