@@ -128,9 +128,7 @@ impl GodotVoip {
                             base.rpc_unreliable("receive_voice", &[peer_id.to_variant(), id.to_variant(), pool_variant]);
                             self.last_voice_id += 1;
                         },
-                        Err(err) => {
-                            godot_print!("Encoding error: {}", err);
-                        }
+                        Err(_) => {}
                     }
                 }
             },
@@ -208,6 +206,9 @@ impl GodotVoip {
 
     #[method(rpc = "remote")]
     fn receive_voice(&mut self, peer_id: i64, voice_packet_id: u32, encoded_buffer: PoolArray<u8>){
+        if self.server_mode {
+            return;
+        }
         let encoded_vec = encoded_buffer.to_vec();
         let packet_encoded = Packet::try_from(&encoded_vec).unwrap();
 
