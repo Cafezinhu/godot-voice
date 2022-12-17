@@ -4,9 +4,19 @@ use audiopus::MutSignals;
 use audiopus::coder::{Encoder, Decoder};
 use audiopus::packet::Packet;
 
+use rubato::{Resampler, SincFixedIn, InterpolationType, InterpolationParameters, WindowFunction};
+
 use gdnative::api::networked_multiplayer_peer::ConnectionStatus;
 use gdnative::api::{AudioServer, AudioEffectCapture, AudioStreamGeneratorPlayback};
 use gdnative::prelude::*;
+
+const INTERPOLATIONPARAMS: InterpolationParameters = InterpolationParameters {
+    sinc_len: 256,
+    f_cutoff: 0.95,
+    interpolation: InterpolationType::Linear,
+    oversampling_factor: 256,
+    window: WindowFunction::BlackmanHarris2,
+};
 
 #[derive(NativeClass)]
 #[inherit(Node)]
@@ -17,6 +27,7 @@ pub struct GodotVoip{
     sorted_voice_packets: HashMap<i64, Vec<VoicePacket>>,
     encoder: Encoder,
     decoder: Decoder,
+    resampler: SincFixedIn<f32>,
     muted: bool,
     last_voice_id: u32
 }
@@ -37,6 +48,13 @@ impl GodotVoip {
             sorted_voice_packets: HashMap::new(),
             encoder: Encoder::new(audiopus::SampleRate::Hz16000, audiopus::Channels::Mono, audiopus::Application::Voip).unwrap(),
             decoder: Decoder::new(audiopus::SampleRate::Hz16000, audiopus::Channels::Mono).unwrap(),
+            resampler: SincFixedIn::<f32>::new(
+                16000 as f64 / 44100 as f64,
+                3.0,
+                INTERPOLATIONPARAMS,
+                2646,
+                1,
+            ).unwrap(),
             muted: false,
             last_voice_id: 0
         }
@@ -86,11 +104,13 @@ impl GodotVoip {
         match &self.microphone_effect {
             Some(microphone_effect) => {
                 let safe_effect = unsafe{ microphone_effect.assume_safe() };
-                if safe_effect.get_frames_available() >= 960 {
-                    let stereo_buffer = safe_effect.get_buffer(960);
-                    let mono_buffer: Vec<f32> = stereo_buffer.to_vec().iter().map(|value| value.x).collect();
+                if safe_effect.get_frames_available() >= 2646 {
+                    let stereo_buffer = safe_effect.get_buffer(2646);
+                    let mono_buffer: Vec<Vec<f32>> = vec![stereo_buffer.to_vec().iter().map(|value| value.x).collect()];
 
-                    let buffer = mono_buffer.as_slice();
+                    let resampled_buffer = self.resampler.process(&mono_buffer, None).unwrap();
+
+                    let buffer = resampled_buffer[0].as_slice();
                     let mut encoded_buffer = [0u8; 960];
                     match self.encoder.encode_float(buffer, &mut encoded_buffer){
                         Ok(size) => {
