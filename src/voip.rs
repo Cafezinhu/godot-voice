@@ -29,7 +29,8 @@ pub struct GodotVoip{
     decoder: Decoder,
     resampler: SincFixedIn<f32>,
     muted: bool,
-    last_voice_id: u32
+    last_voice_id: u32,
+    server_mode: bool
 }
 
 #[derive(Clone)]
@@ -56,17 +57,24 @@ impl GodotVoip {
                 1,
             ).unwrap(),
             muted: false,
-            last_voice_id: 0
+            last_voice_id: 0,
+            server_mode: false
         }
     }
 
     #[method]
     fn _ready(&self, #[base] base: TRef<Node>){
+        if self.server_mode {
+            return;
+        }
         unsafe{base.get_tree().unwrap().assume_safe().create_timer(0.6, false).unwrap().assume_safe().connect("timeout", base, "loop_sort_voice_packets", VariantArray::new_shared(), 0).unwrap()};
     }
 
     #[method]
     fn _process(&mut self, #[base] base: &Node, _delta: f64){
+        if self.server_mode {
+            return;
+        }
         for (k, mut v) in self.sorted_voice_packets.clone(){
             match self.audio_stream_playbacks.get(&k) {
                 Some(playback) => {
@@ -128,6 +136,11 @@ impl GodotVoip {
             },
             None => {}
         }
+    }
+
+    #[method]
+    fn set_server_mode(&mut self, mode: bool){
+        self.server_mode = mode;
     }
 
     #[method]
