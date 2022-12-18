@@ -95,14 +95,12 @@ impl GodotVoip {
             return;
         }
         let tree = unsafe {base.get_tree().unwrap().assume_safe()};
-        let peer_id;
         match tree.network_peer(){
             Some(network_peer) => {
                 let safe_peer = unsafe {network_peer.assume_safe()};
                 if safe_peer.get_connection_status() != ConnectionStatus::CONNECTED {
                     return;
                 }
-                peer_id = tree.get_network_unique_id();
             },
             None => {
                 return;
@@ -125,7 +123,7 @@ impl GodotVoip {
                             let encoded_buffer = encoded_buffer[..size].to_vec();
                             let pool_variant = PoolArray::from_vec(encoded_buffer).to_variant();
                             let id = self.last_voice_id;
-                            base.rpc_unreliable("receive_voice", &[peer_id.to_variant(), id.to_variant(), pool_variant]);
+                            base.rpc_unreliable("receive_voice", &[id.to_variant(), pool_variant]);
                             self.last_voice_id += 1;
                         },
                         Err(_) => {}
@@ -205,10 +203,13 @@ impl GodotVoip {
     }
 
     #[method(rpc = "remote")]
-    fn receive_voice(&mut self, peer_id: i64, voice_packet_id: u32, encoded_buffer: PoolArray<u8>){
+    fn receive_voice(&mut self, #[base] base: TRef<Node>, voice_packet_id: u32, encoded_buffer: PoolArray<u8>){
         if self.server_mode {
             return;
         }
+
+        let peer_id = unsafe{base.get_tree().unwrap().assume_safe().get_rpc_sender_id()};
+
         let encoded_vec = encoded_buffer.to_vec();
         let packet_encoded = Packet::try_from(&encoded_vec).unwrap();
 
