@@ -30,7 +30,8 @@ pub struct GodotVoip{
     resampler: SincFixedIn<f32>,
     muted: bool,
     last_voice_id: u32,
-    server_mode: bool
+    server_mode: bool,
+    jitter_buffer_delay_sec: f64
 }
 
 #[derive(Clone)]
@@ -58,7 +59,8 @@ impl GodotVoip {
             ).unwrap(),
             muted: false,
             last_voice_id: 0,
-            server_mode: false
+            server_mode: false,
+            jitter_buffer_delay_sec: 0.42
         }
     }
 
@@ -67,7 +69,7 @@ impl GodotVoip {
         if self.server_mode {
             return;
         }
-        unsafe{base.get_tree().unwrap().assume_safe().create_timer(0.6, false).unwrap().assume_safe().connect("timeout", base, "loop_sort_voice_packets", VariantArray::new_shared(), 0).unwrap()};
+        unsafe{base.get_tree().unwrap().assume_safe().create_timer(self.jitter_buffer_delay_sec, false).unwrap().assume_safe().connect("timeout", base, "loop_sort_voice_packets", VariantArray::new_shared(), 0).unwrap()};
     }
 
     #[method]
@@ -135,6 +137,17 @@ impl GodotVoip {
     }
 
     #[method]
+    fn set_jitter_buffer_delay_sec(&mut self, delay_sec: f64){
+        self.jitter_buffer_delay_sec = delay_sec;
+    }
+
+    #[method]
+    fn get_jitter_buffer_delay_sec(&self) -> f64{
+        self.jitter_buffer_delay_sec
+    }
+
+
+    #[method]
     fn set_server_mode(&mut self, mode: bool){
         self.server_mode = mode;
     }
@@ -179,7 +192,7 @@ impl GodotVoip {
             self.voice_packets.insert(k, Vec::new());
         }
 
-        unsafe{base.get_tree().unwrap().assume_safe().create_timer(0.6, false).unwrap().assume_safe().connect("timeout", base, "loop_sort_voice_packets", VariantArray::new_shared(), 0).unwrap()};
+        unsafe{base.get_tree().unwrap().assume_safe().create_timer(self.jitter_buffer_delay_sec, false).unwrap().assume_safe().connect("timeout", base, "loop_sort_voice_packets", VariantArray::new_shared(), 0).unwrap()};
     }
 
     #[method]
