@@ -22,7 +22,7 @@ const INTERPOLATIONPARAMS: InterpolationParameters = InterpolationParameters {
 #[inherit(Node)]
 pub struct GodotVoip{
     microphone_effect: Option<Ref<AudioEffectCapture>>,
-    audio_stream_playbacks: HashMap<i64, Ref<AudioStreamGeneratorPlayback>>,
+    peer_configs: HashMap<i64, PeerConfig>,
     voice_packets: HashMap<i64, Vec<VoicePacket>>,
     sorted_voice_packets: HashMap<i64, Vec<VoicePacket>>,
     encoder: Encoder,
@@ -32,6 +32,12 @@ pub struct GodotVoip{
     last_voice_id: u32,
     server_mode: bool,
     jitter_buffer_delay_sec: f64
+}
+
+#[derive(Clone)]
+struct PeerConfig{
+    playback_enabled: bool,
+    stream_playback: Ref<AudioStreamGeneratorPlayback>
 }
 
 #[derive(Clone)]
@@ -45,7 +51,7 @@ impl GodotVoip {
     fn new(_: &Node) -> Self {
         GodotVoip {
             microphone_effect: None,
-            audio_stream_playbacks: HashMap::new(),
+            peer_configs: HashMap::new(),
             voice_packets: HashMap::new(),
             sorted_voice_packets: HashMap::new(),
             encoder: Encoder::new(audiopus::SampleRate::Hz16000, audiopus::Channels::Mono, audiopus::Application::Voip).unwrap(),
@@ -78,10 +84,10 @@ impl GodotVoip {
             return;
         }
         for (k, mut v) in self.sorted_voice_packets.clone(){
-            match self.audio_stream_playbacks.get(&k) {
-                Some(playback) => {
+            match self.peer_configs.get(&k) {
+                Some(peer_config) => {
                     if v.len() >= 1 {
-                        let safe_playback = unsafe {playback.assume_safe()};
+                        let safe_playback = unsafe {peer_config.stream_playback.assume_safe()};
                         if safe_playback.can_push_buffer(960){
                             safe_playback.push_buffer(v[0].voice_pool.clone());
                             v.remove(0);
@@ -178,9 +184,24 @@ impl GodotVoip {
 
     #[method]
     fn set_peer_audio_stream_playback(&mut self, peer_id: i64, audio_stream_playback: Ref<AudioStreamGeneratorPlayback>){
-        self.audio_stream_playbacks.insert(peer_id, audio_stream_playback);
+        self.peer_configs.insert(peer_id, PeerConfig {
+            playback_enabled: true,
+            stream_playback: audio_stream_playback
+        });
         self.voice_packets.insert(peer_id, Vec::new());
         self.sorted_voice_packets.insert(peer_id, Vec::new());
+    }
+
+    #[method]
+    fn set_peer_playback_enabled(&mut self, peer_id: i64, value: bool){
+        if let Some(peer_config) = self.peer_configs.get(&peer_id){
+            let mut new_config = peer_config.clone();
+            new_config.playback_enabled = value;
+            self.peer_configs.insert(peer_id, new_config);
+        }
+        else{
+            godot_error!("Peer {} not found", peer_id);
+        }
     }
 
     #[method]
@@ -205,7 +226,7 @@ impl GodotVoip {
             Some(_) => {},
             None => {}
         }
-        match self.audio_stream_playbacks.remove(&peer_id) {
+        match self.peer_configs.remove(&peer_id) {
             Some(_) => {
                 return true;
             },
@@ -223,32 +244,42 @@ impl GodotVoip {
 
         let peer_id = unsafe{base.get_tree().unwrap().assume_safe().get_rpc_sender_id()};
 
-        let encoded_vec = encoded_buffer.to_vec();
-        let packet_encoded = Packet::try_from(&encoded_vec).unwrap();
+        match self.peer_configs.get(&peer_id) {
+            Some(peer_config) => {
 
-        let mut decoded_buffer: Vec<f32> = vec![0.0; 1024];
-        let signal_buffer = MutSignals::try_from(&mut decoded_buffer).unwrap();
+                if !peer_config.playback_enabled {
+                    return;
+                }
 
-        match self.decoder.decode_float(Some(packet_encoded), signal_buffer, false){
-            Ok(size) => {
-                let buffer = &decoded_buffer[..size];
-                let vector2_buffer: Vec<Vector2> = buffer.into_iter().map(|value| Vector2{x: value.clone(), y: value.clone()}).collect();
-                let pool = PoolArray::from_vec(vector2_buffer);
+                let encoded_vec = encoded_buffer.to_vec();
+                let packet_encoded = Packet::try_from(&encoded_vec).unwrap();
 
-                match self.voice_packets.get(&peer_id){
-                    Some(voice_packets) => {
-                        let mut new_voice_packets = voice_packets.to_vec();
-                        new_voice_packets.push(VoicePacket { id: voice_packet_id, voice_pool: pool });
-                        self.voice_packets.insert(peer_id, new_voice_packets);
+                let mut decoded_buffer: Vec<f32> = vec![0.0; 1024];
+                let signal_buffer = MutSignals::try_from(&mut decoded_buffer).unwrap();
+
+                match self.decoder.decode_float(Some(packet_encoded), signal_buffer, false){
+                    Ok(size) => {
+                        let buffer = &decoded_buffer[..size];
+                        let vector2_buffer: Vec<Vector2> = buffer.into_iter().map(|value| Vector2{x: value.clone(), y: value.clone()}).collect();
+                        let pool = PoolArray::from_vec(vector2_buffer);
+
+                        match self.voice_packets.get(&peer_id){
+                            Some(voice_packets) => {
+                                let mut new_voice_packets = voice_packets.to_vec();
+                                new_voice_packets.push(VoicePacket { id: voice_packet_id, voice_pool: pool });
+                                self.voice_packets.insert(peer_id, new_voice_packets);
+                            },
+                            None => {
+                                godot_warn!("Voice packet from {} received. AudioStreamGeneratorPlayback not set with set_peer_audio_stream_playback.", peer_id);
+                            }
+                        }
                     },
-                    None => {
-                        godot_warn!("Voice packet from {} received. AudioStreamGeneratorPlayback not set with set_peer_audio_stream_playback.", peer_id);
+                    Err(err) => {
+                        godot_print!("Decoding error: {}", err);
                     }
                 }
             },
-            Err(err) => {
-                godot_print!("Decoding error: {}", err);
-            }
+            None => {}
         }
     }
 }
