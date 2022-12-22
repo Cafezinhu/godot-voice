@@ -96,61 +96,52 @@ impl GodotVoip {
         }
         let mut sorted_voice_packets = self.sorted_voice_packets.borrow_mut();
         for (k, mut v) in sorted_voice_packets.clone(){
-            match self.peer_configs.borrow_mut().get(&k) {
-                Some(peer_config) => {
-                    if v.len() >= 1 {
-                        let safe_playback = unsafe {peer_config.stream_playback.assume_safe()};
-                        if safe_playback.can_push_buffer(960){
-                            safe_playback.push_buffer(v[0].voice_pool.clone());
-                            v.remove(0);
-                            sorted_voice_packets.insert(k, v);
-                        }
+            if let Some(peer_config) = self.peer_configs.borrow_mut().get(&k){
+                if v.len() >= 1 {
+                    let safe_playback = unsafe {peer_config.stream_playback.assume_safe()};
+                    if safe_playback.can_push_buffer(960){
+                        safe_playback.push_buffer(v[0].voice_pool.clone());
+                        v.remove(0);
+                        sorted_voice_packets.insert(k, v);
                     }
-                },
-                None => {}
+                }
             }
         }
         
         if self.muted {
             return;
         }
+
         let tree = unsafe {base.get_tree().unwrap().assume_safe()};
-        match tree.network_peer(){
-            Some(network_peer) => {
-                let safe_peer = unsafe {network_peer.assume_safe()};
-                if safe_peer.get_connection_status() != ConnectionStatus::CONNECTED {
-                    return;
-                }
-            },
-            None => {
+        if let Some(network_peer) = tree.network_peer(){
+            let safe_peer = unsafe {network_peer.assume_safe()};
+            if safe_peer.get_connection_status() != ConnectionStatus::CONNECTED {
                 return;
             }
+        }else{
+            return;
         }
 
-        match &self.microphone_effect {
-            Some(microphone_effect) => {
-                let safe_effect = unsafe{ microphone_effect.assume_safe() };
-                if safe_effect.get_frames_available() >= 2646 {
-                    let stereo_buffer = safe_effect.get_buffer(2646);
-                    let mono_buffer: Vec<Vec<f32>> = vec![stereo_buffer.to_vec().iter().map(|value| value.x).collect()];
+        if let Some(microphone_effect) = &self.microphone_effect{
+            let safe_effect = unsafe{ microphone_effect.assume_safe() };
+            if safe_effect.get_frames_available() < 2646 {
+                return;
+            }
 
-                    let resampled_buffer = self.resampler.borrow_mut().process(&mono_buffer, None).unwrap();
+            let stereo_buffer = safe_effect.get_buffer(2646);
+            let mono_buffer: Vec<Vec<f32>> = vec![stereo_buffer.to_vec().iter().map(|value| value.x).collect()];
 
-                    let buffer = resampled_buffer[0].as_slice();
-                    let mut encoded_buffer = [0u8; 960];
-                    match self.encoder.encode_float(buffer, &mut encoded_buffer){
-                        Ok(size) => {
-                            let encoded_buffer = encoded_buffer[..size].to_vec();
-                            let pool_variant = PoolArray::from_vec(encoded_buffer).to_variant();
-                            let mut id = self.last_voice_id.borrow_mut();
-                            base.rpc_unreliable("send_voice", &[id.to_variant(), pool_variant]);
-                            *id += 1;
-                        },
-                        Err(_) => {}
-                    }
-                }
-            },
-            None => {}
+            let resampled_buffer = self.resampler.borrow_mut().process(&mono_buffer, None).unwrap();
+
+            let buffer = resampled_buffer[0].as_slice();
+            let mut encoded_buffer = [0u8; 960];
+            if let Ok(size) = self.encoder.encode_float(buffer, &mut encoded_buffer){
+                let encoded_buffer = encoded_buffer[..size].to_vec();
+                let pool_variant = PoolArray::from_vec(encoded_buffer).to_variant();
+                let mut id = self.last_voice_id.borrow_mut();
+                base.rpc_unreliable("send_voice", &[id.to_variant(), pool_variant]);
+                *id += 1;
+            }
         }
     }
 
@@ -258,46 +249,37 @@ impl GodotVoip {
 
     #[method(rpc = "puppet_sync")]
     fn receive_voice(&self, peer_id: i64, voice_packet_id: u32, encoded_buffer: PoolArray<u8>){
-        // godot_print!("received voice {}", peer_id);
         if self.server_mode {
             return;
         }
 
-        match self.peer_configs.borrow_mut().get(&peer_id) {
-            Some(peer_config) => {
+        if let Some(peer_config) = self.peer_configs.borrow_mut().get(&peer_id){
+            if !peer_config.playback_enabled {
+                return;
+            }
 
-                if !peer_config.playback_enabled {
-                    return;
+            let encoded_vec = encoded_buffer.to_vec();
+            let packet_encoded = Packet::try_from(&encoded_vec).unwrap();
+
+            let mut decoded_buffer: Vec<f32> = vec![0.0; 1024];
+            let signal_buffer = MutSignals::try_from(&mut decoded_buffer).unwrap();
+
+            let decode_result = self.decoder.borrow_mut().decode_float(Some(packet_encoded), signal_buffer, false);
+            if let Ok(size) = decode_result{
+                let buffer = &decoded_buffer[..size];
+                let vector2_buffer: Vec<Vector2> = buffer.into_iter().map(|value| Vector2{x: value.clone(), y: value.clone()}).collect();
+                let pool = PoolArray::from_vec(vector2_buffer);
+                let mut borrowed_voice_packets = self.voice_packets.borrow_mut();
+                if let Some(voice_packets) = borrowed_voice_packets.get(&peer_id){
+                    let mut new_voice_packets = voice_packets.to_vec();
+                    new_voice_packets.push(VoicePacket { id: voice_packet_id, voice_pool: pool });
+                    borrowed_voice_packets.insert(peer_id, new_voice_packets);
+                }else{
+                    godot_warn!("Voice packet from {} received. AudioStreamGeneratorPlayback not set with set_peer_audio_stream_playback.", peer_id);
                 }
-
-                let encoded_vec = encoded_buffer.to_vec();
-                let packet_encoded = Packet::try_from(&encoded_vec).unwrap();
-
-                let mut decoded_buffer: Vec<f32> = vec![0.0; 1024];
-                let signal_buffer = MutSignals::try_from(&mut decoded_buffer).unwrap();
-                match self.decoder.borrow_mut().decode_float(Some(packet_encoded), signal_buffer, false){
-                    Ok(size) => {
-                        let buffer = &decoded_buffer[..size];
-                        let vector2_buffer: Vec<Vector2> = buffer.into_iter().map(|value| Vector2{x: value.clone(), y: value.clone()}).collect();
-                        let pool = PoolArray::from_vec(vector2_buffer);
-                        let mut borrowed_voice_packets = self.voice_packets.borrow_mut();
-                        match borrowed_voice_packets.get(&peer_id){
-                            Some(voice_packets) => {
-                                let mut new_voice_packets = voice_packets.to_vec();
-                                new_voice_packets.push(VoicePacket { id: voice_packet_id, voice_pool: pool });
-                                borrowed_voice_packets.insert(peer_id, new_voice_packets);
-                            },
-                            None => {
-                                godot_warn!("Voice packet from {} received. AudioStreamGeneratorPlayback not set with set_peer_audio_stream_playback.", peer_id);
-                            }
-                        }
-                    },
-                    Err(err) => {
-                        godot_print!("Decoding error: {}", err);
-                    }
-                }
-            },
-            None => {}
+            }else if let Err(err) = decode_result{
+                godot_warn!("Decoding error: {}", err);
+            }
         }
     }
 }
