@@ -22,7 +22,7 @@ const INTERPOLATIONPARAMS: InterpolationParameters = InterpolationParameters {
 #[derive(NativeClass)]
 #[inherit(Node)]
 #[register_with(Self::register_signals)]
-pub struct GodotVoip{
+pub struct GodotVoice{
     microphone_effect: Option<Ref<AudioEffectCapture>>,
     peer_configs: RefCell<HashMap<i64, PeerConfig>>,
     voice_packets: RefCell<HashMap<i64, Vec<VoicePacket>>>,
@@ -49,9 +49,9 @@ struct VoicePacket{
 }
 
 #[methods]
-impl GodotVoip {
+impl GodotVoice {
     fn new(_: &Node) -> Self {
-        GodotVoip {
+        GodotVoice {
             microphone_effect: None,
             peer_configs: RefCell::new(HashMap::new()),
             voice_packets: RefCell::new(HashMap::new()),
