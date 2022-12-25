@@ -59,7 +59,7 @@ impl GodotVoice {
             encoder: Encoder::new(audiopus::SampleRate::Hz16000, audiopus::Channels::Mono, audiopus::Application::Voip).unwrap(),
             decoder: RefCell::new(Decoder::new(audiopus::SampleRate::Hz16000, audiopus::Channels::Mono).unwrap()),
             resampler: RefCell::new(SincFixedIn::<f32>::new(
-                16000 as f64 / 44100 as f64,
+                16000_f64 / 44100_f64,
                 3.0,
                 INTERPOLATIONPARAMS,
                 2646,
@@ -97,7 +97,7 @@ impl GodotVoice {
         let mut sorted_voice_packets = self.sorted_voice_packets.borrow_mut();
         for (k, mut v) in sorted_voice_packets.clone(){
             if let Some(peer_config) = self.peer_configs.borrow_mut().get(&k){
-                if v.len() >= 1 {
+                if !v.is_empty() {
                     let safe_playback = unsafe {peer_config.stream_playback.assume_safe()};
                     if safe_playback.can_push_buffer(960){
                         safe_playback.push_buffer(v[0].voice_pool.clone());
@@ -172,16 +172,12 @@ impl GodotVoice {
     }
 
     #[method]
-    fn set_bus_index(&mut self, index: i64) -> bool {
+    fn set_bus_index(&mut self, index: i64) {
         let bus_effect = AudioServer::get_bus_effect(AudioServer::godot_singleton(), index, 0);
-        match bus_effect {
-            Some(effect) => {
-                self.microphone_effect = Some(effect.cast::<AudioEffectCapture>().unwrap());
-                return true;
-            },
-            None => {
-                return false;
-            }
+        if let Some(effect) = bus_effect{
+            self.microphone_effect = Some(effect.cast::<AudioEffectCapture>().unwrap());
+        }else{
+            godot_error!("Bus effect {} not found!", index);
         }
     }
 
@@ -222,22 +218,11 @@ impl GodotVoice {
     }
 
     #[method]
-    fn remove_peer_audio_stream_playback(&self, peer_id: i64) -> bool{
-        match self.voice_packets.borrow_mut().remove(&peer_id){
-            Some(_) => {},
-            None => {}
-        }
-        match self.sorted_voice_packets.borrow_mut().remove(&peer_id){
-            Some(_) => {},
-            None => {}
-        }
-        match self.peer_configs.borrow_mut().remove(&peer_id) {
-            Some(_) => {
-                return true;
-            },
-            None => {
-                return false;
-            }
+    fn remove_peer_audio_stream_playback(&self, peer_id: i64){
+        if self.voice_packets.borrow_mut().remove(&peer_id).is_some() {}
+        if self.sorted_voice_packets.borrow_mut().remove(&peer_id).is_some() {}
+        if self.peer_configs.borrow_mut().remove(&peer_id).is_none() {
+            godot_warn!("AudioStreamPlayback from peer {} was not found.", peer_id);
         }
     }
 
@@ -267,7 +252,7 @@ impl GodotVoice {
             let decode_result = self.decoder.borrow_mut().decode_float(Some(packet_encoded), signal_buffer, false);
             if let Ok(size) = decode_result{
                 let buffer = &decoded_buffer[..size];
-                let vector2_buffer: Vec<Vector2> = buffer.into_iter().map(|value| Vector2{x: value.clone(), y: value.clone()}).collect();
+                let vector2_buffer: Vec<Vector2> = buffer.iter().map(|value| Vector2{x: *value, y: *value}).collect();
                 let pool = PoolArray::from_vec(vector2_buffer);
                 let mut borrowed_voice_packets = self.voice_packets.borrow_mut();
                 if let Some(voice_packets) = borrowed_voice_packets.get(&peer_id){
