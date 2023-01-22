@@ -163,7 +163,7 @@ impl GodotVoice {
                 let encoded_buffer = encoded_buffer[..size].to_vec();
                 let pool_variant = PoolArray::from_vec(encoded_buffer).to_variant();
                 let mut id = self.last_voice_id.borrow_mut();
-                base.rpc_unreliable("send_voice", &[id.to_variant(), pool_variant]);
+                base.rpc_unreliable_id(1, "send_voice", &[id.to_variant(), pool_variant]);
                 *id += 1;
             }
         }
