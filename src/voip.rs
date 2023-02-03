@@ -34,7 +34,7 @@ pub struct GodotVoice {
     last_voice_id: RefCell<u32>,
     server_mode: bool,
     jitter_buffer_delay_sec: f64,
-    allow_direct_message: bool
+    allow_direct_message: bool,
 }
 
 #[derive(Clone)]
@@ -74,7 +74,7 @@ impl GodotVoice {
             last_voice_id: RefCell::new(0),
             server_mode: false,
             jitter_buffer_delay_sec: 0.42,
-            allow_direct_message: false
+            allow_direct_message: false,
         }
     }
 
@@ -238,7 +238,7 @@ impl GodotVoice {
     }
 
     #[method]
-    fn allow_direct_message(&mut self, value: bool){
+    fn allow_direct_message(&mut self, value: bool) {
         self.allow_direct_message = value;
     }
 
@@ -247,6 +247,9 @@ impl GodotVoice {
         let mut voice_packets = self.voice_packets.borrow_mut();
         for (k, v) in voice_packets.clone() {
             let mut sorted_voice_packets = v;
+            if sorted_voice_packets.is_empty() {
+                continue;
+            }
             sorted_voice_packets.sort_unstable_by_key(|value| value.id);
             self.sorted_voice_packets
                 .borrow_mut()
@@ -305,13 +308,19 @@ impl GodotVoice {
     }
 
     #[method(rpc = "puppet_sync")]
-    fn receive_voice(&self, #[base] base: TRef<Node>, peer_id: i64, voice_packet_id: u32, encoded_buffer: PoolArray<u8>) {
+    fn receive_voice(
+        &self,
+        #[base] base: TRef<Node>,
+        peer_id: i64,
+        voice_packet_id: u32,
+        encoded_buffer: PoolArray<u8>,
+    ) {
         if self.server_mode {
             return;
         }
 
         let sender: i64 = unsafe { base.get_tree().unwrap().assume_safe().get_rpc_sender_id() };
-        if sender != 1i64 && !self.allow_direct_message{
+        if sender != 1i64 && !self.allow_direct_message {
             return;
         }
 
