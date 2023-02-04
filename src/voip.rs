@@ -172,17 +172,22 @@ impl GodotVoice {
     }
 
     #[method]
-    fn send_packet_to(
+    fn send_packet(
         &self,
         #[base] base: &Node,
-        peer_id: i64,
+        from: i64,
+        to: i64,
         packet_id: u32,
         packet_buffer: PoolArray<u8>,
     ) {
         base.rpc_unreliable_id(
-            peer_id,
+            from,
             "receive_voice",
-            &[packet_id.to_variant(), packet_buffer.to_variant()],
+            &[
+                to.to_variant(),
+                packet_id.to_variant(),
+                packet_buffer.to_variant(),
+            ],
         );
     }
 
