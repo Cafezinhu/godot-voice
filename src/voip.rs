@@ -92,7 +92,7 @@ impl GodotVoice {
     }
 
     #[method]
-    fn start_server(&self, #[base] base: TRef<Node>) {
+    fn _ready(&self, #[base] base: TRef<Node>) {
         let tree = unsafe { base.get_tree().unwrap().assume_safe() };
 
         tree.connect(
@@ -103,19 +103,13 @@ impl GodotVoice {
             0,
         )
         .unwrap();
-    }
 
-    #[method]
-    fn _ready(&self, #[base] base: TRef<Node>) {
         if self.dedicated_mode {
             return;
         }
 
         unsafe {
-            base.get_tree()
-                .unwrap()
-                .assume_safe()
-                .create_timer(self.jitter_buffer_delay_sec, false)
+            tree.create_timer(self.jitter_buffer_delay_sec, false)
                 .unwrap()
                 .assume_safe()
                 .connect(
@@ -191,15 +185,26 @@ impl GodotVoice {
     }
 
     #[method]
-    fn network_peer_disconnected(&self, id: i64) {
-        self.remove_peer_from_current_room(id);
+    fn network_peer_disconnected(&self, #[base] base: &Node, id: i64) {
+        let is_server = unsafe { base.get_tree().unwrap().assume_safe().is_network_server() };
+        if !is_server {
+            return;
+        }
+
+        self.remove_peer_from_current_room(base, id);
         if !self.dedicated_mode {
             self.remove_peer_audio_stream_playback(id);
         }
     }
 
     #[method]
-    fn remove_peer_from_current_room(&self, id: i64) {
+    fn remove_peer_from_current_room(&self, #[base] base: &Node, id: i64) {
+        let is_server = unsafe { base.get_tree().unwrap().assume_safe().is_network_server() };
+        if !is_server {
+            godot_error!("remove_peer_from_current_room is only allowed to be called on a server.");
+            return;
+        }
+
         let mut peer_room = self.peer_room.borrow_mut();
         if let Some(room) = peer_room.get(&id) {
             let mut rooms = self.rooms.borrow_mut();
@@ -454,14 +459,14 @@ impl GodotVoice {
     }
 
     #[method]
-    fn put_peer_in_room(&self, #[base] base: TRef<Node>, peer_id: i64, room: String) {
+    fn put_peer_in_room(&self, #[base] base: &Node, peer_id: i64, room: String) {
         let is_server = unsafe { base.get_tree().unwrap().assume_safe().is_network_server() };
         if !is_server {
             godot_error!("put_peer_in_room is only allowed to be called on a server.");
             return;
         }
 
-        self.remove_peer_from_current_room(peer_id);
+        self.remove_peer_from_current_room(base, peer_id);
 
         let mut rooms = self.rooms.borrow_mut();
         if let Some(peers_in_room) = rooms.get_mut(&room) {
