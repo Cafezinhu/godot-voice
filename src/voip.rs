@@ -32,9 +32,11 @@ pub struct GodotVoice {
     resampler: RefCell<SincFixedIn<f32>>,
     muted: bool,
     last_voice_id: RefCell<u32>,
-    server_mode: bool,
+    dedicated_mode: bool,
     jitter_buffer_delay_sec: f64,
     allow_direct_message: bool,
+    rooms: RefCell<HashMap<String, Vec<i64>>>,
+    peer_room: RefCell<HashMap<i64, String>>,
 }
 
 #[derive(Clone)]
@@ -72,9 +74,11 @@ impl GodotVoice {
             ),
             muted: false,
             last_voice_id: RefCell::new(0),
-            server_mode: false,
+            dedicated_mode: false,
             jitter_buffer_delay_sec: 0.42,
             allow_direct_message: false,
+            rooms: RefCell::new(HashMap::new()),
+            peer_room: RefCell::new(HashMap::new()),
         }
     }
 
@@ -88,10 +92,25 @@ impl GodotVoice {
     }
 
     #[method]
+    fn start_server(&self, #[base] base: TRef<Node>) {
+        let tree = unsafe { base.get_tree().unwrap().assume_safe() };
+
+        tree.connect(
+            "network_peer_disconnected",
+            base,
+            "network_peer_disconnected",
+            VariantArray::new_shared(),
+            0,
+        )
+        .unwrap();
+    }
+
+    #[method]
     fn _ready(&self, #[base] base: TRef<Node>) {
-        if self.server_mode {
+        if self.dedicated_mode {
             return;
         }
+
         unsafe {
             base.get_tree()
                 .unwrap()
@@ -112,7 +131,7 @@ impl GodotVoice {
 
     #[method]
     fn _process(&self, #[base] base: &Node, _delta: f64) {
-        if self.server_mode {
+        if self.dedicated_mode {
             return;
         }
         let mut sorted_voice_packets = self.sorted_voice_packets.borrow_mut();
@@ -172,6 +191,31 @@ impl GodotVoice {
     }
 
     #[method]
+    fn network_peer_disconnected(&self, id: i64) {
+        self.remove_peer_from_current_room(id);
+        if !self.dedicated_mode {
+            self.remove_peer_audio_stream_playback(id);
+        }
+    }
+
+    #[method]
+    fn remove_peer_from_current_room(&self, id: i64) {
+        let mut peer_room = self.peer_room.borrow_mut();
+        if let Some(room) = peer_room.get(&id) {
+            let mut rooms = self.rooms.borrow_mut();
+            if let Some(peers) = rooms.get(room) {
+                let filtered_peers: Vec<i64> = peers
+                    .iter()
+                    .filter(|peer| **peer != id)
+                    .map(|peer| peer.to_owned())
+                    .collect();
+                rooms.insert(room.to_string(), filtered_peers);
+            }
+            peer_room.remove(&id);
+        }
+    }
+
+    #[method]
     fn send_packet(
         &self,
         #[base] base: &Node,
@@ -202,8 +246,8 @@ impl GodotVoice {
     }
 
     #[method]
-    fn set_server_mode(&mut self, mode: bool) {
-        self.server_mode = mode;
+    fn set_dedicated_mode(&mut self, mode: bool) {
+        self.dedicated_mode = mode;
     }
 
     #[method]
@@ -325,6 +369,29 @@ impl GodotVoice {
                 voice_buffer.to_variant(),
             ],
         );
+
+        || -> Option<()> {
+            let peer_rooms = self.peer_room.borrow();
+            let room = peer_rooms.get(&peer_id)?;
+            let rooms = self.rooms.borrow();
+            let peers = rooms.get(room)?;
+
+            for peer in peers {
+                if peer != &peer_id {
+                    base.rpc_id(
+                        peer.to_owned(),
+                        "receive_voice",
+                        &[
+                            peer_id.to_variant(),
+                            voice_packet_id.to_variant(),
+                            voice_buffer.to_variant(),
+                        ],
+                    );
+                }
+            }
+
+            Some(())
+        }();
     }
 
     #[method(rpc = "puppet_sync")]
@@ -335,7 +402,7 @@ impl GodotVoice {
         voice_packet_id: u32,
         encoded_buffer: PoolArray<u8>,
     ) {
-        if self.server_mode {
+        if self.dedicated_mode {
             return;
         }
 
@@ -384,5 +451,25 @@ impl GodotVoice {
                 godot_warn!("Decoding error: {}", err);
             }
         }
+    }
+
+    #[method]
+    fn put_peer_in_room(&self, #[base] base: TRef<Node>, peer_id: i64, room: String) {
+        let is_server = unsafe { base.get_tree().unwrap().assume_safe().is_network_server() };
+        if !is_server {
+            godot_error!("put_peer_in_room is only allowed to be called on a server.");
+            return;
+        }
+
+        self.remove_peer_from_current_room(peer_id);
+
+        let mut rooms = self.rooms.borrow_mut();
+        if let Some(peers_in_room) = rooms.get_mut(&room) {
+            peers_in_room.push(peer_id);
+        } else {
+            rooms.insert(room.clone(), vec![peer_id]);
+        }
+
+        self.peer_room.borrow_mut().insert(peer_id, room);
     }
 }
