@@ -201,7 +201,7 @@ impl GodotVoice {
     fn remove_peer_from_current_room(&self, #[base] base: &Node, id: i64) {
         let is_server = unsafe { base.get_tree().unwrap().assume_safe().is_network_server() };
         if !is_server {
-            godot_error!("remove_peer_from_current_room is only allowed to be called on a server.");
+            godot_warn!("remove_peer_from_current_room is only allowed to be called on a server.");
             return;
         }
 
@@ -462,7 +462,7 @@ impl GodotVoice {
     fn put_peer_in_room(&self, #[base] base: &Node, peer_id: i64, room: String) {
         let is_server = unsafe { base.get_tree().unwrap().assume_safe().is_network_server() };
         if !is_server {
-            godot_error!("put_peer_in_room is only allowed to be called on a server.");
+            godot_warn!("put_peer_in_room is only allowed to be called on a server.");
             return;
         }
 
