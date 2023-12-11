@@ -1,5 +1,5 @@
 # godot-voice
-Basic VOIP system for Godot.
+Basic VOIP system for Godot 3.5.
 Example: https://github.com/Cafezinhu/godot-voice-example/
 
 Features:
